@@ -1,0 +1,80 @@
+version: '3.7'
+services:
+  traefik:
+    image: traefik:v2.3
+    ports:
+      - "80:80" # <== http
+      - "8080:8080" # <== :8080 is where the dashboard runs on
+      - "443:443" # <== https
+    command:
+    #### These are the CLI commands that will configure Traefik and tell it how to work! ####
+      ## API Settings - https://docs.traefik.io/operations/api/, endpoints - https://docs.traefik.io/operations/api/#endpoints ##
+      - --api.insecure=true # <== Enabling insecure api, NOT RECOMMENDED FOR PRODUCTION
+      - --api.dashboard=true # <== Enabling the dashboard to view services, middlewares, routers, etc...
+      - --api.debug=true # <== Enabling additional endpoints for debugging and profiling
+      ## Log Settings (options: ERROR, DEBUG, PANIC, FATAL, WARN, INFO) - https://docs.traefik.io/observability/logs/ ##
+      - --log.level=DEBUG # <== Setting the level of the logs from traefik
+      ## Provider Settings - https://docs.traefik.io/providers/docker/#provider-configuration ##
+      - --providers.docker=true # <== Enabling docker as the provider for traefik
+      - --providers.docker.exposedbydefault=false # <== Don't expose every container to traefik, only expose enabled ones
+      - --providers.file.filename=/dynamic.yaml # <== Referring to a dynamic configuration file
+      - --providers.docker.network=web # <== Operate on the docker network named web
+      ## Entrypoints Settings - https://docs.traefik.io/routing/entrypoints/#configuration ##
+      - --entrypoints.web.address=:80 # <== Defining an entrypoint for port :80 named web
+      - --entrypoints.web-secured.address=:443 # <== Defining an entrypoint for https on port :443 named web-secured
+      ## Certificate Settings (Let's Encrypt) -  https://docs.traefik.io/https/acme/#configuration-examples ##
+      - --certificatesresolvers.mytlschallenge.acme.tlschallenge=true # <== Enable TLS-ALPN-01 to generate and renew ACME certs
+      - --certificatesresolvers.mytlschallenge.acme.email=theafkdeveloper@gmail.com # <== Setting email for certs
+      - --certificatesresolvers.mytlschallenge.acme.storage=/letsencrypt/acme.json # <== Defining acme file to store cert information
+    volumes:
+      - ./letsencrypt:/letsencrypt # <== Volume for certs (TLS)
+      - /var/run/docker.sock:/var/run/docker.sock # <== Volume for docker admin
+      - ./dynamic.yaml:/dynamic.yaml # <== Volume for dynamic conf file, **ref: line 27
+    networks:
+      - web # <== Placing traefik on the network named web, to access containers on this network
+    labels:
+    #### Labels define the behavior and rules of the traefik proxy for this container ####
+      - "traefik.enable=true" # <== Enable traefik on itself to view dashboard and assign subdomain to view it
+      - "traefik.http.routers.api.rule=Host(`monitor.localhost`)" # <== Setting the domain for the dashboard
+      - "traefik.http.routers.api.service=api@internal" # <== Enabling the api to be a service to acces
+
+  db:
+    image: postgres:13.1
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-q", "-d", "postgres", "-U", "root" ]
+      timeout: 45s
+      interval: 10s
+      retries: 10
+    restart: always
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - ./sql:/docker-entrypoint-initdb.d/
+    ports:
+      - 5432:5432
+    hostname: postgre-db
+    labels: # auto-detects port 80 in next line
+      - "traefik.port=5432"
+      - "traefik.db.rule=Host:db.localhost"
+  api:
+    build:
+      context: ./
+      dockerfile: docker/api/Dockerfile
+    environment:
+      DB_PARAMS: "user=${POSTGRES_USER} password=${POSTGRES_PASSWORD} host=db dbname=${POSTGRES_USER} sslmode=disable"
+      # DEBUG: 1
+    labels: # auto-detects port 8000 in next line
+      - "traefik.enable=true"
+      - "traefik.http.routers.nginx-web.rule=Host(`api.localhost`)" # <== Your Domain Name goes here for the http rule
+      - "traefik.http.routers.nginx-web.entrypoints=web" # <== Defining the entrypoint for http, **ref: line 30
+      - "traefik.http.services.nginx-web.loadbalancer.server.port=25478"
+    networks:
+      - web
+    ports:
+      - 25478:25478
+networks:
+  web:
+    external: true
+  backend:
+    external: false
